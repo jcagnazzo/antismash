@@ -351,3 +351,76 @@ def run_muscle_single(seq_name: str, seq: str, comparison_file: str) -> Dict[str
                                    seq_name))
             fasta = read_fasta(temp_out.name)
     return fasta
+
+
+def align_domain_to_reference(reference_alignment: str, seq_names: list, seq_seqs: list) -> Dict[str, str]:
+    """ Aligns PROTEIN domains to a reference PROTEIN alignment via
+         muscle then muscle profile
+
+        Arguments:
+            reference_alignment: path to the reference alignment
+            seq_names: list of all the sequence names (str)
+            seq_seqs: list of protein sequences (str) (NOTE: assumes same index as seq_names)
+
+        Returns:
+            a fasta alignment
+    """
+    config = get_config()
+
+    ## Align all queries to each other
+    with NamedTemporaryFile(mode="w+") as query_unaligned:
+        write_fasta(seq_names,seq_seqs), query_unaligned.name)
+        with NamedTemporaryFile(mode="w+") as query_aligned:
+            result = execute(["muscle", "-quiet",
+                              "-in", query_unaligned.name,
+                              "-out", query_aligned.name])
+            if not result.successful():
+                raise RuntimeError("muscle returned %d: %r while aligning query %s" % (
+                    result.return_code, result.stderr.replace("\n", ""),
+                    query_unaligned.name))
+            with NamedTemporaryFile(mode="w+") as profile_aligned:
+                profile_result = execute(["muscle", "profile", "-quiet",
+                                          "-in1", reference_alignment,
+                                          "-in2", query_aligned.name,
+                                          "-out", profile_aligned.name])
+                if not profile_result.successful():
+                    raise RuntimeError("muscle returned %d: %r while aligning query %s to ref %s" % (
+                        result.return_code, result.stderr.replace("\n", ""),
+                        query_aligned.name, reference_alignment))
+                afa = read_fasta(profile_aligned.name)
+    return afa
+
+
+def run_pplacer(reference_tree: str, reference_alignment: str, reference_package: str, alignment: Dict[str, str] -> str):
+    """ Runs pplacer, places query sequences onto a precalculated phylogeny
+
+        Arguments:
+            reference_alignment: path to the reference alignment
+            alignment: fasta Dictionary of seq names (str) to seqs (str)
+
+        Returns:
+            path to the resulting pplacer singular tree, newick format
+    """
+    config = get_config()
+    
+    pplacer_tree = "pplacer_tree.sing.nwk" ## This may need to be updated depending on working dirs
+    with NamedTemporaryFile(mode="w+") as aln:
+        write_fasta(alignment)
+        with NamedTemporaryFile(mode="w+") as jplace:
+            pplacer_result = execute(["pplacer",
+                          "-t", reference_tree,
+                          "-r", reference_alignment,
+                          "-o", jplace.name,
+                          "-c", reference_package,
+                          aln.name])
+            if not pplacer_result.successful():
+                raise RuntimeError("pplacer returned %d: %r while placing query alignment %s" % (
+                    result.return_code, result.stderr.replace("\n", ""),
+                    aln.name))
+            ## Summarize to a single tree
+            guppy_result = execute(["guppy", "sing", jplace.name, "-o", pplacer_tree])
+            if not guppy_result.successful():
+                raise RuntimeError("guppy sing returned %d: %r while summarizing %s" % (
+                    result.return_code, result.stderr.replace("\n", ""),
+                    jplace.name))
+    return(pplacer_tree)
