@@ -391,7 +391,7 @@ def align_domain_to_reference(reference_alignment: str, seq_names: list, seq_seq
     return afa
 
 
-def run_pplacer(reference_tree: str, reference_alignment: str, reference_package: str, alignment: Dict[str, str] -> str):
+def run_pplacer(reference_tree: str, reference_alignment: str, reference_package: str, alignment: Dict[str, str]) -> str:
     """ Runs pplacer, places query sequences onto a precalculated phylogeny
 
         Arguments:

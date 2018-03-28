@@ -13,7 +13,7 @@ from antismash.common.secmet.feature import FeatureLocation, PFAMDomain
 
 import ete3
 
-def parse_pplacer(leaf2clade: Dict[str, str], pplacer_tree: str, masscutoff: float, mode: str -> Dict[str, str]):
+def parse_pplacer(leaf2clade: Dict[str, str], pplacer_tree: str, masscutoff: float, mode: str) -> Dict[str, str]:
     """ Parses pplacer trees (guppy sing) and returns clade assignments
 
         Arguments:
