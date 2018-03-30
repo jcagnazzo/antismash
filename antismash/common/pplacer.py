@@ -11,21 +11,36 @@ from antismash.common import fasta, module_results, pfamdb, subprocessing
 from antismash.common.secmet import Record, CDSFeature
 from antismash.common.secmet.feature import FeatureLocation, PFAMDomain
 
-import ete3
+from ete3 import Tree
 
-def parse_pplacer(leaf2clade: Dict[str, str], pplacer_tree: str, masscutoff: float, mode: str) -> Dict[str, str]:
-    """ Parses pplacer trees (guppy sing) and returns clade assignments
+class CladeAssignmentResults(module_results.ModuleResults):
+    """ Results for clade assignments """
+
+    def __init__(self, record_id: str, clade_assignment: str, tool: str, snn_score: float) -> None:
+        super().__init__(record_id)
+        self.clade_assignment = str(clade_assignment)
+        self.tool = str(tool)
+        self.snn_score = float(snn_score)
+
+
+## Note:  Key of returned dictionary may eventually be changed to class Record
+## Note2: this was tested only for TransAT KS domains without an SNN score. This
+##        will need to be adapted to fit SANDPUMA
+def parse_pplacer(leaf2clade: Dict[str, str], pplacer_tree: str, masscutoff: float, mode: str, calc_snn: bool) -> Dict[str, CladeAssignmentResults]:
+    """ Parses pplacer trees (guppy sing) and returns clade assignments and SNN scores
 
         Arguments:
             leaf2clade: dictionary of leaves in tree to clade
             pplacer_tree: pplacer tree in newick format
             masscutoff: threshold of mass to assign a clade ranging from 0 (low) to 1 (high), default=0.9
             mode: clade assignment mode
+            calc_snn: True=calculate SNN score, False=don't
         Returns:
             dictionary of query_name -> clade_assignment
     """
     
     monoclade = {} ## Dictionary for final clade assignments
+    tool = 'pplacer_'+mode
     with open(pplacer_tree) as f:
         for ln in f.read().splitlines():
             t = Tree(ln)
@@ -54,10 +69,10 @@ def parse_pplacer(leaf2clade: Dict[str, str], pplacer_tree: str, masscutoff: flo
                             else:
                                 clade_assignments[clade_assignment] = 1;
                         if len(clade_assignments) == 1: ## A single assignment made
-                            for count in clade_assignments:
-                                monoclade[pref] = count
+                            for a in clade_assignments:
+                                monoclade[pref] = CladeAssignmentResults(pref, a, tool, None)
                         else: ## None or more than one assignment made
-                            monoclade[pref] = 'clade_not_conserved'
+                            monoclade[pref] = CladeAssignmentResults(pref, 'clade_not_conserved', tool, None)
                     elif mode == 'additive':
                         totalmass = {}
                         pref = ''
@@ -69,10 +84,11 @@ def parse_pplacer(leaf2clade: Dict[str, str], pplacer_tree: str, masscutoff: flo
                             else:
                                 totalmass[clade_assignment] = mass
                         best_clade = max(totalmass, key=totalmass.get)
+                        
                         if totalmass[best_clade] >= masscutoff: ## Best clade over threshold
-                            monoclade[pref] = best_clade
+                            monoclade[pref] = CladeAssignmentResults(pref, best_clade, tool, None)
                         else: ## None or more than one assignment made
-                            monoclade[pref] = 'clade_not_conserved'
+                            monoclade[pref] = CladeAssignmentResults(pref, 'clade_not_conserved', tool, None)
                     else:
                         raise RuntimeError("Unrecognized mode in parse_pplacer() (in common/pplacer.py)")
     return monoclade
@@ -113,6 +129,6 @@ def pplacer_clade_assignment(leaf2clade_tbl: str, reference_tree: str, reference
     ## highest mass, and then adds only if the next highest placement is of the same
     ## clade; returns best clade over cutoff
     ## additive is the default, could potentially build this in as a switch later on
-    clade_assignment = parse_pplacer(leaf2clade, pplacer_tree, masscutoff, 'additive')
+    clade_assignment = parse_pplacer(leaf2clade, pplacer_tree, masscutoff, 'additive', False)
 
     return clade_assignment
