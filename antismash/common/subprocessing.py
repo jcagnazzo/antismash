@@ -369,7 +369,7 @@ def align_domain_to_reference(reference_alignment: str, seq_names: list, seq_seq
 
     ## Align all queries to each other
     with NamedTemporaryFile(mode="w+") as query_unaligned:
-        write_fasta(seq_names,seq_seqs), query_unaligned.name)
+        write_fasta(seq_names,seq_seqs, query_unaligned.name)
         with NamedTemporaryFile(mode="w+") as query_aligned:
             result = execute(["muscle", "-quiet",
                               "-in", query_unaligned.name,
@@ -385,7 +385,7 @@ def align_domain_to_reference(reference_alignment: str, seq_names: list, seq_seq
                                           "-out", profile_aligned.name])
                 if not profile_result.successful():
                     raise RuntimeError("muscle returned %d: %r while aligning query %s to ref %s" % (
-                        result.return_code, result.stderr.replace("\n", ""),
+                        profile_result.return_code, profile_result.stderr.replace("\n", ""),
                         query_aligned.name, reference_alignment))
                 afa = read_fasta(profile_aligned.name)
     return afa
@@ -405,7 +405,7 @@ def run_pplacer(reference_tree: str, reference_alignment: str, reference_package
     
     pplacer_tree = "pplacer_tree.sing.nwk" ## This may need to be updated depending on working dirs
     with NamedTemporaryFile(mode="w+") as aln:
-        write_fasta(alignment)
+        write_fasta(alignment, aln)
         with NamedTemporaryFile(mode="w+") as jplace:
             pplacer_result = execute(["pplacer",
                           "-t", reference_tree,
@@ -415,12 +415,54 @@ def run_pplacer(reference_tree: str, reference_alignment: str, reference_package
                           aln.name])
             if not pplacer_result.successful():
                 raise RuntimeError("pplacer returned %d: %r while placing query alignment %s" % (
-                    result.return_code, result.stderr.replace("\n", ""),
+                    pplacer_result.return_code, pplacer_result.stderr.replace("\n", ""),
                     aln.name))
             ## Summarize to a single tree
             guppy_result = execute(["guppy", "sing", jplace.name, "-o", pplacer_tree])
             if not guppy_result.successful():
                 raise RuntimeError("guppy sing returned %d: %r while summarizing %s" % (
-                    result.return_code, result.stderr.replace("\n", ""),
+                    guppy_result.return_code, guppy_result.stderr.replace("\n", ""),
                     jplace.name))
     return(pplacer_tree)
+
+def run_mafft_predicat_trim(fa: Dict[str, str]) -> Dict[str, str]:
+    """ Runs mafft for overhang trimming within predicat (SANDPUMA)
+
+        Arguments:
+            fa: fasta Dictionary of seq names (str) to seqs (str)
+
+        Returns:
+            aligned fasta Dictionary of seq names (str) to seqs (str)
+    """
+    with NamedTemporaryFile(mode="w+") as query_unaligned:
+        write_fasta(fa, query_unaligned.name)
+        with NamedTemporaryFile(mode="w+") as query_aligned:
+            mafft_result = execute(["mafft", "--quiet", "--namelength 70", "--op 5",
+                                    query_unaligned.name],
+                                   stdout=query_aligned.name)
+            if not mafft_result.successful():
+                raise RuntimeError("mafft returned %d: %r while performing initial prediCAT trim alignment" % (
+                    mafft_result.return_code, mafft_result.stderr.replace("\n", "") ))
+            return read_fasta(query_aligned.name)
+
+def run_muscle_profile_predicat(ref_afa: Dict[str, str], query_fa: Dict[str, str]) -> Dict[str, str]:
+    """ Runs mafft for overhang trimming within predicat (SANDPUMA)
+
+        Arguments:
+            ref_afa: aligned fasta Dictionary of seq names (str) to seqs (str)
+            query_fa: single entry fasta Dictionary of seq names (str) to seqs (str)
+
+        Returns:
+            aligned fasta Dictionary of all seq names (str) to seqs (str)
+    """
+    with NamedTemporaryFile(mode="w+") as query_unaligned:
+        write_fasta(fa, query_unaligned.name)
+        with NamedTemporaryFile(mode="w+") as all_aligned:
+            muscle_result = execute(["muscle", "-profile",
+                                     "-in1", ref_afa,
+                                     "-in2", query_unaligned.name,
+                                     "-out", all_aligned.name])
+            if not muscle_result.successful():
+                raise RuntimeError("muscle -profile returned %d: %r while performing prediCAT reference alignment" % (
+                    muscle_result.return_code, muscle_result.stderr.replace("\n", "") ))
+            return read_fasta(all_aligned.name)
