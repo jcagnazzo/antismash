@@ -12,16 +12,16 @@ from antismash.common import fasta, module_results, pfamdb, subprocessing, pplac
 from antismash.common.secmet import Record, CDSFeature
 from antismash.common.secmet.feature import FeatureLocation, PFAMDomain
 
-from ete3 import Tree
+from Bio import Phylo
 import multiprocessing
 
 class PredicatResults(module_results.ModuleResults):
         """ Results for prediCAT """
-        def __init__(self, record_id: str, monophyly: str, forced: str, nndist: float, nn_score: float, snn_score: float) -> None:
+        def __init__(self, record_id: str, monophyly: str, forced: str, nn_dist: float, nn_score: float, snn_score: float) -> None:
             super().__init__(record_id)
             self.monophyly = str(monophyly)
             self.forced = str(forced)
-            self.nndist = float(nndist)
+            self.nn_dist = float(nn_dist)
             self.nn_score = float(nn_score)
             self.snn_score = float(snn_score)
 
@@ -41,14 +41,238 @@ class SandpumaResults(module_results.ModuleResults):
             self.ensemble = str(ensemble)
             self.sandpuma = str(sandpuma)
 
-def run_predicat(reference_aln: str, queryfa: Dict[str, str], wildcard: str, leaf2clade_fi: str, ref_tree: str, ref_pkg: str, masscutoff: float) -> PredicatResults:
-        """ SANDPUMA parallelized pipleline
+def get_parent(tree, child_clade):
+        node_path = tree.get_path(child_clade)
+        if len(node_path) < 2:
+                return None
+        return node_path[-2]
+
+def get_child_leaves(tree, parent):
+        child_leaves = []
+        for leaf in tree.get_terminals():
+                for node in tree.get_path(leaf):
+                        if(node == parent):
+                                child_leaves.append(leaf)
+        return child_leaves
+
+def calcscore(scaleto, distance):
+        if(distance >= scaleto):
+                return 0
+        else:
+                return float(scaleto - distance) / scaleto
+
+def getscore(scaleto, nd, dist2q, leaf, o):
+        score = 0
+        nnspec = leaf[o[0]]['spec']
+        for n in o:
+                curspec = leaf[o[0]]['spec']
+                if(nnspec == curspec):
+                        tmpscore = calcscore(scaleto, float(dist2q[n]) / nd)
+                        if(tmpscore > 0):
+                                score += tmpscore
+                        else:
+                                break
+                else:
+                        break
+        return score    
+
+def deeperdive(query: int, tree: Phylo.Tree, nearest1: int, nearest2: int, l: Dict[int, str, Any])-> str, str, str:
+        """ deeper substrate prediction triggered for non-monophyletic seqs
+
+        Arguments:
+            query: index for the query
+            tree: tree
+            nearest1: index for the nearest neighbor
+            nearest2, index for the second nearest neighbor
+            l: dictionary of leaf index to str to any
+                       includes group (str), id (str), spec (str), node (Phylo.node)
+
+        Returns:
+            monophyly specificity (str), hit name (str), forced call specificity (str)
+        """
+
+        ## Want query to nearest dist to be less than nearest1 to nearest2 dist
+        query_to_nn1 = tree.distance(l[query]['node'], l[nearest1]['node'])
+        nn1_to_nn2 = tree.distance(l[nearest1]['node'], l[nearest2]['node'])
+        query_to_nn2 = tree.distance(l[query]['node'], l[nearest2]['node'])
+        if((query_to_nn1 < nn1_to_nn2) and (l[nearest1]['spec'] == l[nearest2]['spec'])):
+                return (l[nearest1]['spec'], l[nearest1]['id'], 'no_force_needed')
+        elif((query_to_nn1 == query_to_nn2) and (l[nearest1]['spec'] != l[nearest2]['spec'])):
+                return ('no_confident_result', 'NA', 'no_confident_result')
+        else:
+                parent = get_parent(tree, l[query]['node'])
+                if parent is None:
+                        return ('no_confident_result', 'NA', 'no_confident_result')
+                sisterdist = {}
+                for sister in get_child_leaves(tree, parent):
+                        sisterdist[sister.name] = {}
+                        sisterdist[sister.name]['dist'] = tree.distance(l[query]['node'], sister)
+                        sisterdist[sister.name]['node'] = sister
+                        ordered_sisterdist = sorted(sisterdist, key=sisterdist.get)
+                        for name in ordered_sisterdist:
+                                if(name != l[query]['id']):
+                                        forced = re.split("_+", name)
+                                        return ('no_confident_result', 'NA', forced[-1])
+                        return ('no_confident_result', 'NA', 'no_confident_result') 
+
+def checkclade(query: int, lo: int, hi: int, wc: str, tree: Phylo.Tree, l: Dict[int, str, Any])-> str, str:
+        """ recursive substrate prediction for a query & it's sisters in a tree
+
+        Arguments:
+            query: index for the query
+            lo: index for the lower sister
+            hi: index for the higher sister
+            wc: wildcard variable
+            tree: tree
+            l: dictionary of leaf index to str to any
+                       includes group (str), id (str), spec (str), node (Phylo.node)
+
+        Returns:
+            substrate specificity (str), hit name (str)
+        """
+        if((lo in l) and (hi in l)): ## Not first or last
+                if(l[lo]['spec'] == wc): ## lower bound is wildcard
+                        checkclade(query, lo-1, hi, wc, l)
+                elif(l[hi]['spec'] == wc): ## upper bound is wildcard
+                        checkclade(query, lo, hi+1, wc, l)
+                else:
+                        ## Get the lca's descendants and check specs
+                        lca = tree.common_ancestor(l[lo]['node'], l[hi]['node'])
+                        spec = ''
+                        iname = ''
+                        passflag = 1
+                        for child in get_child_leaves(tree, lca):
+                                split_id = re.split("_+", child.name)
+                                if(spec != ''): ## Not yet assigned
+                                        if((split_id[-1] != spec) and (split_id[-1] != wc)): ## Specs are different, Requires a deeper dive
+                                                passflag = 0
+                                        else:
+                                                spec = split_id[-1]
+                                                iname = split_id[0]
+                                else:
+                                        spec = split_id[-1]
+                                        iname = split_id[0]
+                        if(passflag == 0):
+                                return('deeperdive', 'NA')
+                        else:
+                                return(spec, iname)
+        else: ## First or last
+                return('deeperdive', 'NA')        
+
+        
+                
+def predicat(pplacer_tree: str, masscutoff: float, wild: str)-> PredicatResults:
+        """ predicat substrate prediction
+
+        Arguments:
+            pplacer_tree: pplacer tree (newick)
+            masscutoff: cutoff value for pplacer masses
+            wild: wildcard variable
+
+        Returns:
+                PredicatResults
+                    monophyly -> substrate specificity (str)
+                    forced -> substrate specificity (str)
+                    nndist -> distance to nearest neighbor (float)
+                    nn_score -> nearest neighbor score (float)
+                    snn_score -> scaled nearest neighbor score (float)
+        """
+
+        ## predicat settings
+        zero_thresh = 0.005 ## Branch distance less than which to call sequences identical
+        nppref = ['Q70AZ7_A3', 'Q8KLL5_A3'] ## Leaves used to normalize the nn score to SNN
+        npnode = ['', ''] ## initialize node list for leaves above
+        dcut = 2.5 ## normalized distance cutoff for nearest neighbor (emperically derived default=2.5)
+
+        ## read tree
+        tree = Phylo.read(pplacer_tree, 'newick')
+
+        query = []
+        leaves = {}
+
+        ## Loop through leaves, only keep top placement
+        for leaf in tree.get_terminals():
+                split_id = re.split("_+", leaf.name) ## Split ID on _, split_id[-1] will be specificity
+                if re.match("^#[123456789]\d*$", split_id[-2]) is not None: ## matches a non-top pplacer placement
+                        tree.prune(leaf) ## remove it
+        ## Loop through leaves to find groups
+        last = '' ## Keep track of the last specificity, initialize on ''
+        group = 1 ## group number
+        leafnum = 1 ## leaf number
+        for leaf in tree.get_terminals():
+                if(bool(re.search('^'+nppref[0], leaf.name))): ## if node is nppref[0], store the node
+                        npnode[0] = leaf
+                elif(bool(re.search('^'+nppref[1], leaf.name))): ## if node is nppref[1], store the node
+                        npnode[1] = leaf
+                split_id = re.split("_+", leaf.name) ## Split ID on _, split_id[-1] will be specificity
+                if(last != ''): ## Every pass except the first
+                        if((last != split_id[-1]) or (last != wild)): ## begin new group
+                                group += 1
+                if re.match("^#0$", split_id[-2]) is not None: ## matches pplacer query formatting; #0 is the top placement
+                        last = wild
+                        mass = float(re.sub(r"^.+#\d+_M=(\d+?\.?\d*)$", "\g<1>", leaf.name))
+                        if(mass < masscutoff):
+                                return PredicatResults('no_confident_result', 'no_confident_result', 0, 0, 0)
+                else:
+                        last = split_id[-1]
+
+                leaves[leafnum] = {}
+                leaves[leafnum]['id'] = leaf.name
+                leaves[leafnum]['group'] = group
+                leaves[leafnum]['spec'] = last
+                leaves[leafnum]['node'] = leaf
+                ## Record queries
+                if(last == wild):
+                        query.append(leafnum)
+                leafnum += 1 
+
+        qnum = next(iter(query))
+        ## Get distances to knowns
+        distfromquery = {}
+        for leafnum in leaves:
+                if((qnum != leafnum) and (leaves[leafnum]['spec'] != wild)):
+                        distfromquery[leafnum] = tree.distance(leaves[qnum]['node'], leaves[leafnum]['node'])
+        # Sort distances
+        ordered_dist = sorted(distfromquery, key=distfromquery.get)
+        ## Get zero distances
+        zero_dist = []
+        for leafnum in ordered_dist:
+                if(distfromquery[leafnum] <= zero_thresh):
+                        if(distfromquery[leafnum] >= 0):
+                                zero_dist.append(leafnum)
+                        else:
+                                break
+        forcedpred = 'no_force_needed'
+        pred = 'no_pred_made'
+        hit = 'NA'
+        if(len(zero_dist) > 0): ## query has zero length known neighbors
+                pred = leaves[zero_dist[0]]['spec']
+                hit = re.search("^(\S+)_.+$", leaves[zero_dist[0]]['id']).groups()[0]
+        else:
+                ## predict the clade
+                pred, hit = checkclade(qnum, qnum-1, qnum+1, wild, tree, leaves)
+                if(pred == 'deeperdive'):
+                        pred, hit, forcedpred = deeperdive(qnum, tree, ordered_dist[0], ordered_dist[1], leaves)
+                        if(hit != 'NA'):
+                                hit = re.search("^(\S+)_.+$", hit).groups()[0]
+        normdist = tree.distance(npnode[0], npnode[1])
+        nn_dist = float(distfromq[ordered_dist[0]]) / normdist
+        nnscore = 0
+        snnscore = 0
+        if(nn_dist < dcut):
+                snnscore = getscore(dcut, normdist, distfromquery, leaves, ordered_dist)
+                nnscore = calcscore(dcut, nn_dist)
+        
+        return PredicatResults(pred, forcedpred, nn_dist, nnscore, snnscore)
+
+
+def run_predicat(reference_aln: str, queryfa: Dict[str, str], wildcard: str, ref_tree: str, ref_pkg: str, masscutoff: float) -> PredicatResults:
+        """ pplacer and predicat substrate prediciton
 
         Arguments:
             reference_aln: filename for reference protein fasta, see sandpuma_multithreaded comments for requirements
             tmpfaa: filename for the single query faa
             wildcard: suffix str identifying query sequence (Default= 'UNK' which means headers end in '_UNK')
-            leaf2clade_fi: leaf to clade mapping file
             ref_tree: reference tree (newick)
             ref_pkg: pplacer reference package
             masscutoff: cutoff value for pplacer masses
@@ -78,14 +302,13 @@ def run_predicat(reference_aln: str, queryfa: Dict[str, str], wildcard: str, lea
         all_aligned = subprocessing.run_muscle_profile_predicat(reference_aln, trimmedfa)
         
         ## Pplacer (NOTE: this is new to SANDPUMA as of antiSMASH5 and needs to be tested
-        clade_assignment = pplacer.pplacer_clade_assignment(leaf2clade_fi, ref_tree, reference_aln, ref_pkg, all_aligned, masscutoff)
+        pplacer_tree = subprocessing.run_pplacer(ref_tree, reference_aln, ref_pkg, all_aligned)
 
-        ## MORE HERE SOON!
+        ## prediCAT
+        return predicat(pplacer_tree, masscutoff, wildcard)
 
 
-        
-        
-def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, leaf2clade_fi: str, ref_tree: str, ref_pkg: str, masscutoff: float):
+def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float):
         """ SANDPUMA
 
         Order of processing:
@@ -109,7 +332,6 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
             min_leaf_sup: minimum leaf support required within the decision tree; default= 10
             jackknife_data: filename for jackknife benchmarking results
             ref_aln: reference alignment (fasta) file
-            leaf2clade_fi: leaf to clade mapping file
             ref_tree: reference tree (newick)
             ref_pkg: pplacer reference package
             masscutoff: cutoff value for pplacer masses
@@ -128,8 +350,14 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         queryfa = {wc_name: fasta[query]}
 
         ## PrediCAT
-        run_predicat(ref_aln, queryfa, wildcard, leaf2clade_fi, ref_tree, ref_pkg, masscutoff)
-        
+        predicat_result = run_predicat(ref_aln, queryfa, wildcard, ref_tree, ref_pkg, masscutoff)
+
+        ## ASM
+        ## SVM
+        ## pHMM
+        ## PID
+        ## Ensemble
+        ## Rescore paths
 
 
 
@@ -163,7 +391,7 @@ def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[st
             groups[groupname] = [qname]
     return groups
 
-def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, leaf2clade_fi: str, ref_tree: str, ref_pkg: str, masscutoff:float):
+def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff:float):
         """ SANDPUMA parallelized pipleline
 
         Arguments:
@@ -177,19 +405,19 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
             min_leaf_sup: minimum leaf support required within the decision tree; default= 10
             jackknife_data: filename for jackknife benchmarking results
             ref_aln: reference alignment (fasta) file
-            leaf2clade_fi: leaf to clade mapping file
             ref_tree: reference tree (newick)
             ref_pkg: pplacer reference package
             masscutoff: cutoff value for pplacer masses
 
-        Returns:                                                                                                                             
-    """
-    
-    groups = split_into_groups(name2seq, threads)
-    for group in groups:
-        toprocess = {}
-        for name in name2seq:
-            if name in groups[group]:
-                toprocess[name] = name2seq[name]
-        p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, leaf2clade_fi, ref_tree, ref_pkg, masscutoff))
-        p.start()
+        Returns:                                     
+
+        """
+
+        groups = split_into_groups(name2seq, threads)
+        for group in groups:
+                toprocess = {}
+                for name in name2seq:
+                        if name in groups[group]:
+                                toprocess[name] = name2seq[name]
+                p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff))
+                p.start()
