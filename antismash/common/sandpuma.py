@@ -41,13 +41,13 @@ class SandpumaResults(module_results.ModuleResults):
             self.ensemble = str(ensemble)
             self.sandpuma = str(sandpuma)
 
-def get_parent(tree, child_clade):
+def get_parent(tree, child_clade) -> Phylo.Node:
         node_path = tree.get_path(child_clade)
         if len(node_path) < 2:
                 return None
         return node_path[-2]
 
-def get_child_leaves(tree, parent):
+def get_child_leaves(tree, parent) -> List:
         child_leaves = []
         for leaf in tree.get_terminals():
                 for node in tree.get_path(leaf):
@@ -55,13 +55,13 @@ def get_child_leaves(tree, parent):
                                 child_leaves.append(leaf)
         return child_leaves
 
-def calcscore(scaleto, distance):
+def calcscore(scaleto, distance) -> float:
         if(distance >= scaleto):
                 return 0
         else:
                 return float(scaleto - distance) / scaleto
 
-def getscore(scaleto, nd, dist2q, leaf, o):
+def getscore(scaleto, nd, dist2q, leaf, o) -> float:
         score = 0
         nnspec = leaf[o[0]]['spec']
         for n in o:
@@ -271,7 +271,7 @@ def run_predicat(reference_aln: str, queryfa: Dict[str, str], wildcard: str, ref
 
         Arguments:
             reference_aln: filename for reference protein fasta, see sandpuma_multithreaded comments for requirements
-            tmpfaa: filename for the single query faa
+            queryfa: seq id to seq dictionary
             wildcard: suffix str identifying query sequence (Default= 'UNK' which means headers end in '_UNK')
             ref_tree: reference tree (newick)
             ref_pkg: pplacer reference package
@@ -307,8 +307,81 @@ def run_predicat(reference_aln: str, queryfa: Dict[str, str], wildcard: str, ref
         ## prediCAT
         return predicat(pplacer_tree, masscutoff, wildcard)
 
+def run_asm(queryfa: Dict[str, str], stachfa: Dict[str, str], seedfa: Dict[str, str]) -> str:
+       """ Active site motif (ASM) substrate prediction
 
-def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float):
+        Arguments:
+            queryfa: seq id to seq dictionary
+            stachfa: seq name to seq for stachelhaus codes
+            seedfa: seq name to seq for seed alignment for stachelhaus code extraction
+
+        Returns:                                                                                                                             substrate specificity prediction
+       """ 
+
+       ## ASM settings
+       gapopen = 3.4
+       properlen = 117 ## true length
+       grsAcode = {4:1,5:1,8:1,47:1,68:1,70:1,91:1,99:1,100:1} ## positions in grsA for code
+
+       ## Alignment
+       toalign = {**queryfa, **seedfa}
+       aligned2seed = subprocessing.mafft_sandpuma_asm(toalign, gapopen)
+
+       ## Loop through alignment to find new positions for code
+       qname = next(iter(queryfa))
+       pos = 0
+       newcode = []
+       for p, val in enumerate(aligned2seed['phe_grsA']):
+               if(val=='-'):
+                       continue
+               else:
+                       pos += 1
+                       if(pos in grsAcode):
+                               newcode.append(p)
+        ## Extract codes
+        extractedcode = {}
+        for seqname in aligned2seed:
+                code = ''
+                for n in newcode:
+                        code = code + aligned2seq[seqname][n]
+                        extractedcode[seqname] = code
+        ## Error checking
+        truth = {'phe_grsA':'DAWTIAAIC', 'asp_stfA-B2':'DLTKVGHIG','orn_grsB3':'DVGEIGSID','val_cssA9':'DAWMFAAVL'}
+        for seqname in extractedcode:
+                if seqname == qname:
+                        continue
+                else:
+                        if extractedcode[seqname] != truth[seqname]:
+                                return('no_call') ## Issue with the alignment
+        ## Score each
+        scores = {}
+        for sname in stachfa:
+                match = 0
+                split_id = re.split("_+", sname)
+                spec = re.split("|", split_id[-1])
+                for p, val in enumerate(stachfa[sname]):
+                        if val == extractedcode[qname][p]:
+                                match += 1
+                if str(match) in scores:
+                        for s in spec:
+                                if s in scores[str(match)]:
+                                        scores[str(match)][s] += 1
+                                else:
+                                        scores[str(match)][s] = 1
+                else:
+                        scores[str(match)] = {}
+                        for s in spec:
+                                scores[str(match)][s] = 1
+        if '9' in scores:
+                return('|'.join(sorted(scores['9'])))
+        elif '8' in scores:
+                return('|'.join(sorted(scores['8'])))
+        elif '7' in scores:
+                return('|'.join(sorted(scores['7'])))
+        else:
+                return('no_call')
+
+def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float, stachfa: Dict[str, str], seedfa: Dict[str, str]):
         """ SANDPUMA
 
         Order of processing:
@@ -319,7 +392,6 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
             pid: calculate protein percent identity to the known/training set
             ensemble: ML decision tree substrate specificity prediction based on the results above
             rescore: exclude unreliable ensemble tree paths
-
 
         Arguments:
             group: prefix group name
@@ -335,7 +407,8 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
             ref_tree: reference tree (newick)
             ref_pkg: pplacer reference package
             masscutoff: cutoff value for pplacer masses
-
+            stachfa: seq name to seq for stachelhaus codes
+            seedfa: seq name to seq for seed alignment for stachelhaus code extraction
 
         Returns:                                                                                                                             
     """
@@ -353,6 +426,8 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         predicat_result = run_predicat(ref_aln, queryfa, wildcard, ref_tree, ref_pkg, masscutoff)
 
         ## ASM
+        asm = run_asm(queryfa, stachfa, seedfa)
+
         ## SVM
         ## pHMM
         ## PID
@@ -362,6 +437,7 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
 
 
 def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[str]]:
+                      
         """ divides a query set into groups to run over SANDPUMA's parallelized pipleline
 
         Arguments:
@@ -371,12 +447,12 @@ def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[st
         Returns:
             dictionary of groups to list of fasta headers
 
-    """
-    n_seqs = length(fasta)
-    seqs_per_group = int(n_seqs / n_groups)
+        """
+                      n_seqs = length(fasta)
+                      seqs_per_group = int(n_seqs / n_groups)
     qnum = 0
     groupnum = 1
-    groups = []
+    groups = {}
     for qname in fasta:
         if (qnum == 0) or (i < seqs_per_group):
             groupname = 'group'+str(groupnum)
@@ -391,7 +467,7 @@ def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[st
             groups[groupname] = [qname]
     return groups
 
-def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff:float):
+def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff:float, stach_file: str, seed_file: str):
         """ SANDPUMA parallelized pipleline
 
         Arguments:
@@ -408,16 +484,20 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
             ref_tree: reference tree (newick)
             ref_pkg: pplacer reference package
             masscutoff: cutoff value for pplacer masses
+            stach_file: fasta file of stachelhaus codes
+            seed_file: seed fasta file (single entry) used for stachelhaus code extraction
 
         Returns:                                     
 
         """
 
+        stach_fa = read_fasta(stach_file)
+        seed_fa = read_fasta(seed_file)
         groups = split_into_groups(name2seq, threads)
         for group in groups:
                 toprocess = {}
                 for name in name2seq:
                         if name in groups[group]:
                                 toprocess[name] = name2seq[name]
-                p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff))
+                p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa))
                 p.start()

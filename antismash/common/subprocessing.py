@@ -466,3 +466,27 @@ def run_muscle_profile_predicat(ref_afa: Dict[str, str], query_fa: Dict[str, str
                 raise RuntimeError("muscle -profile returned %d: %r while performing prediCAT reference alignment" % (
                     muscle_result.return_code, muscle_result.stderr.replace("\n", "") ))
             return read_fasta(all_aligned.name)
+
+def mafft_sandpuma_asm(toalign: Dict[str, str], gapopen: float) -> Dict[str, str]:
+    """ Runs mafft for initial alignment for stachelhaus code extraction (SANDPUMA)
+
+        Arguments:
+            toalign: fasta Dictionary of seq names (str) to seqs (str)
+            gapopen: gapopen penalty
+
+
+        Returns:
+            aligned fasta Dictionary of all seq names (str) to seqs (str)
+    """
+    with NamedTemporaryFile(mode="w+") as query_unaligned:
+        write_fasta(toalign, query_unaligned.name)
+        with NamedTemporaryFile(mode="w+") as all_aligned:
+            mafft_result = execute(["mafft", "--quiet",
+                                     "--op", gapopen,
+                                     "--namelength", 60,
+                                     query_unaligned.name],
+                                   stdout=all_aligned.name)
+            if not mafft_result.successful():
+                raise RuntimeError("mafft returned %d: %r while performing ASM seed alignment" % (
+                    mafft_result.return_code, mafft_result.stderr.replace("\n", "") ))
+            return read_fasta(all_aligned.name)
