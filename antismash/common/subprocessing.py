@@ -445,11 +445,10 @@ def run_mafft_predicat_trim(fa: Dict[str, str]) -> Dict[str, str]:
                     mafft_result.return_code, mafft_result.stderr.replace("\n", "") ))
             return read_fasta(query_aligned.name)
 
-def run_muscle_profile_predicat(ref_afa: Dict[str, str], query_fa: Dict[str, str]) -> Dict[str, str]:
-    """ Runs mafft for overhang trimming within predicat (SANDPUMA)
-
+def run_muscle_profile_sandpuma(ref_afa: str, query_fa: Dict[str, str]) -> Dict[str, str]:
+    """ Runs muscle profile within predicat or svms (SANDPUMA)
         Arguments:
-            ref_afa: aligned fasta Dictionary of seq names (str) to seqs (str)
+            ref_afa: aligned fasta
             query_fa: single entry fasta Dictionary of seq names (str) to seqs (str)
 
         Returns:
@@ -466,6 +465,7 @@ def run_muscle_profile_predicat(ref_afa: Dict[str, str], query_fa: Dict[str, str
                 raise RuntimeError("muscle -profile returned %d: %r while performing prediCAT reference alignment" % (
                     muscle_result.return_code, muscle_result.stderr.replace("\n", "") ))
             return read_fasta(all_aligned.name)
+
 
 def mafft_sandpuma_asm(toalign: Dict[str, str], gapopen: float) -> Dict[str, str]:
     """ Runs mafft for initial alignment for stachelhaus code extraction (SANDPUMA)
@@ -490,3 +490,49 @@ def mafft_sandpuma_asm(toalign: Dict[str, str], gapopen: float) -> Dict[str, str
                 raise RuntimeError("mafft returned %d: %r while performing ASM seed alignment" % (
                     mafft_result.return_code, mafft_result.stderr.replace("\n", "") ))
             return read_fasta(all_aligned.name)
+
+def run_svm_sandpuma(seq: str) -> str:
+    """ Runs SVM predictions based on NRPSPredictor2 as part of SANDPUMA
+
+        Arguments:
+            seq: 34 char A-domanin code
+
+
+        Returns:
+            SVM prediction
+    """
+    nrps2basedir = '/home/mchevrette/git/sandpuma/dependencies/NRPSPredictor2'
+    libs = nrps2basedir+'/lib'
+    build = nrps2basedir+'/build'
+    datadir = nrps2basedir+'/data'
+
+    with NamedTemporaryFile(mode="w+") as sig:
+        out_file = open(sig.name, "w")
+        out_file.write("%s\t%s\n" % (seq, 'query'))
+        out_file.close()
+        
+        svm_result = execute(["java",
+                              "-Ddatadir="+datadir,
+                              "-cp", ':'.join([build+'/NRPSpredictor2.jar',
+                                               libs+'/java-getopt-1.0.13.jar',
+                                               libs+'/Utilities.jar',
+                                               libs+'/libsvm.jar']),
+                              "org.roettig.NRPSpredictor2.NRPSpredictor2",
+                              sig.name],
+                             stdout='/dev/null')
+        if not svm_result.successful():
+            raise RuntimeError("SVM processing returned %d: %r" % (
+                svm_result.return_code, svm_result.stderr.replace("\n", "") ))
+    pred = 'no_call'
+    with open("query.rep", "r") as rep:
+        for line in rep:
+            line = line.strip()
+            if not line:
+                continue
+            if line[0] == '#':
+                continue
+            result = line.split("\t")
+            pred = result[6]
+            break
+    cleanup = execute(["rm", "query.rep"])
+    return pred

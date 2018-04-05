@@ -299,7 +299,7 @@ def run_predicat(reference_aln: str, queryfa: Dict[str, str], wildcard: str, ref
         trimmed = aligned[query][head:-tail].replace('-', '') ## Removes head and tail then removes gaps
         trimmedfa = {query: trimmed}
         ## Align trimmed seq to reference
-        all_aligned = subprocessing.run_muscle_profile_predicat(reference_aln, trimmedfa)
+        all_aligned = subprocessing.run_muscle_profile_sandpuma(reference_aln, trimmedfa)
         
         ## Pplacer (NOTE: this is new to SANDPUMA as of antiSMASH5 and needs to be tested
         pplacer_tree = subprocessing.run_pplacer(ref_tree, reference_aln, ref_pkg, all_aligned)
@@ -381,6 +381,66 @@ def run_asm(queryfa: Dict[str, str], stachfa: Dict[str, str], seedfa: Dict[str, 
         else:
                 return('no_call')
 
+    
+def run_svm(queryfa: Dict[str, str]) -> str:
+        """ Support vector machine (SVM) substrate prediction
+
+        Arguments:
+            queryfa: seq id to seq dictionary
+
+        Returns:                                                                                                                             substrate specificity prediction
+        """
+        #Extract 10 / 34 AA NRPS signatures from A domains
+
+        ## Set input files
+        ref = "A_domains_muscle.fasta" ## From NRPSPredictor2
+
+        ## Set positions
+        startpos = 66
+        a34positions = [210, 213, 214, 230, 234,
+                        235, 236, 237, 238, 239,
+                        240, 243, 278, 279, 299,
+                        300, 301, 302, 303, 320,
+                        321, 322, 323, 324, 325,
+                        326, 327, 328, 329, 330,
+                        331, 332, 333, 334]
+        positions34 = []
+        for p in a34positions:
+                positions34.append(p-startpos)
+
+
+        aligned = subprocessing.run_muscle_profile_sandpuma(ref, queryfa)
+
+        refname = "P0C062_A1"
+        ## Get the 34 code for the query
+        qname = next(iter(queryfa))
+        refseq = aligned[refname]
+        allp, nongaps = 0, 0
+        poslist = []
+        while refseq != '':
+                if nongaps in positions34 and refseq[0] != '-':
+                        poslist.append(b)
+                if refseq[0] != '-':
+                        nongaps += 1
+                allp += 1
+                refseq[1:]
+        seq34 = ''
+        for j in poslist:
+                aa = queryfa[qname][j]
+                k, l = j, j
+                if aa == '-':
+                        k += 1
+                        l = l - 1
+                        if l not in poslist:
+                                aa = queryfa[qname][l]
+                        elif (j+1) not in poslist:
+                                aa = queryfa[qname][k]
+                seq34 = seq34+aa
+        return subprocessing.run_svm_sandpuma(seq34)
+
+
+                
+        
 def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float, stachfa: Dict[str, str], seedfa: Dict[str, str]):
         """ SANDPUMA
 
@@ -429,7 +489,11 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         asm = run_asm(queryfa, stachfa, seedfa)
 
         ## SVM
+        svm = run_svm(queryfa)
+
         ## pHMM
+        phmm = run_phmm(queryfa)
+        
         ## PID
         ## Ensemble
         ## Rescore paths
