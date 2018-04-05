@@ -536,3 +536,82 @@ def run_svm_sandpuma(seq: str) -> str:
             break
     cleanup = execute(["rm", "query.rep"])
     return pred
+
+def run_phmm_sandpuma(queryfa: Dict[str, str], hmmdb: str) -> str:
+    """ Runs pHMM predictions as part of SANDPUMA
+
+        Arguments:
+            queryfa: single entry fasta Dictionary of seq names (str) to seqs (str)
+            hmmdb: path to the hmmdb
+
+        Returns:
+            pHMM prediction
+    """
+
+    with NamedTemporaryFile(mode="w+") as query:
+        write_fasta(queryfa, query.name)
+        with NamedTemporaryFile(mode="w+") as out:
+            with NamedTemporaryFile(mode="w+") as tbl:
+                phmm_result = execute(["hmmscan",
+                                       "-o", out.name,
+                                       "--tblout", tbl.name,
+                                       "--noali",
+                                       hmmdb,
+                                       query.name])
+                if not phmm_result.successful():
+                    raise RuntimeError("SANDPUMA pHMM processing returned %d: %r" % (
+                        phmm_result.return_code, phmm_result.stderr.replace("\n", "") ))
+                if os.path.exists(tbl.name):
+                    with open(tbl.name, "r") as res:
+                        for line in res:
+                            line = line.strip()
+                            if re.match("^\w+\S*\s", line) is not None:
+                                hit = re.sub(r"^(\w+\S*)\s.+$", "\g<1>", line)
+                                hit = re.sub(r"^(.+)_\S+$", "\g<1>", hit)
+                                return hit
+                else:
+                    return 'no_call'
+
+def run_pid_sandpuma(queryfa: Dict[str, str], knownfaa) -> float:
+    """ Runs protein percent ID calculation for SANDPUMA
+
+        Arguments:
+            queryfa: single entry fasta Dictionary of seq names (str) to seqs (str)
+            knownfaa: path to the training fasta
+
+        Returns:
+            percent identity
+    """
+
+    with NamedTemporaryFile(mode="w+") as query:
+        write_fasta(queryfa, query.name)
+        with NamedTemporaryFile(mode="w+") as db:
+            db_result = execute(["diamond", "-makedb",
+                                 "--in", knownfaa,
+                                 "--db", db.name],
+                                stdout="/dev/null",
+                                stderr="/dev/null")
+            if not db_result.successful():
+                raise RuntimeError("diamond makedb (SANDPUMA pid) returned %d: %r" % (
+                    db_result.return_code, db_result.stderr.replace("\n", "") ))
+            with NamedTemporaryFile(mode="w+") as bp:
+                bp_result = execute(["diamond", "blastp",
+                                     "--query", query.name,
+                                     "--db", db.name+'.dmnd',
+                                     "--out", bp.name,
+                                     "--evalue", "1e-10",
+                                     "--query-cover", "50"],
+                                stdout="/dev/null",
+                                stderr="/dev/null")
+                if not bp_result.successful():
+                    raise RuntimeError("diamond blastp (SANDPUMA pid) returned %d: %r" % (
+                        bp_result.return_code, bp_result.stderr.replace("\n", "") ))
+                bit, pid = 0, 0
+                with open(bp.name, "r") as res:
+                    for line in res:
+                        line = line.strip()
+                        l = line.split("\t")
+                        if bit < float(l[-1]):
+                            pid = float(l[2])
+                            bit = float(l[-1])
+                return pid

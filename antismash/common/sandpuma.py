@@ -12,6 +12,8 @@ from antismash.common import fasta, module_results, pfamdb, subprocessing, pplac
 from antismash.common.secmet import Record, CDSFeature
 from antismash.common.secmet.feature import FeatureLocation, PFAMDomain
 
+from sklearn import tree
+import numpy as np
 from Bio import Phylo
 import multiprocessing
 
@@ -161,13 +163,14 @@ def checkclade(query: int, lo: int, hi: int, wc: str, tree: Phylo.Tree, l: Dict[
 
         
                 
-def predicat(pplacer_tree: str, masscutoff: float, wild: str)-> PredicatResults:
+def predicat(pplacer_tree: str, masscutoff: float, wild: str, snn_thresh: float)-> PredicatResults:
         """ predicat substrate prediction
 
         Arguments:
             pplacer_tree: pplacer tree (newick)
             masscutoff: cutoff value for pplacer masses
             wild: wildcard variable
+            snn_thresh: SNN threshold for confident prediction (default=0.5)
 
         Returns:
                 PredicatResults
@@ -243,7 +246,7 @@ def predicat(pplacer_tree: str, masscutoff: float, wild: str)-> PredicatResults:
                         else:
                                 break
         forcedpred = 'no_force_needed'
-        pred = 'no_pred_made'
+        pred = 'no_call'
         hit = 'NA'
         if(len(zero_dist) > 0): ## query has zero length known neighbors
                 pred = leaves[zero_dist[0]]['spec']
@@ -255,6 +258,8 @@ def predicat(pplacer_tree: str, masscutoff: float, wild: str)-> PredicatResults:
                         pred, hit, forcedpred = deeperdive(qnum, tree, ordered_dist[0], ordered_dist[1], leaves)
                         if(hit != 'NA'):
                                 hit = re.search("^(\S+)_.+$", hit).groups()[0]
+        if forcedpred == 'no_force_needed':
+                forcedpred = pred
         normdist = tree.distance(npnode[0], npnode[1])
         nn_dist = float(distfromq[ordered_dist[0]]) / normdist
         nnscore = 0
@@ -262,7 +267,9 @@ def predicat(pplacer_tree: str, masscutoff: float, wild: str)-> PredicatResults:
         if(nn_dist < dcut):
                 snnscore = getscore(dcut, normdist, distfromquery, leaves, ordered_dist)
                 nnscore = calcscore(dcut, nn_dist)
-        
+        if(snnscore < snn_thresh):
+                forcedpred = 'no_confident_result'
+                
         return PredicatResults(pred, forcedpred, nn_dist, nnscore, snnscore)
 
 
@@ -438,10 +445,27 @@ def run_svm(queryfa: Dict[str, str]) -> str:
                 seq34 = seq34+aa
         return subprocessing.run_svm_sandpuma(seq34)
 
+def get_feature_matrix(spec: str, i2s: List[str]) -> List:
+        """ Generate a feature matrix given a specificity and an ordered index2specificity map
 
-                
-        
-def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float, stachfa: Dict[str, str], seedfa: Dict[str, str]):
+        Arguments:
+            spec: substrate specificity
+            i2s: ordered list of specificities
+
+        Returns:                                     
+            List of features (0= absent, 1=present)
+        """
+
+        f = []
+        for i in i2s:
+                if i == spec:
+                        f.append(1)
+                else:
+                        f.append(0)
+        return f
+
+
+def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float, stachfa: Dict[str, str], seedfa: Dict[str, str], clf: DecisionTreeClassifier, i2s: List[str]):
         """ SANDPUMA
 
         Order of processing:
@@ -462,28 +486,26 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
             knownasm: filename for reference active site motif protein fasta, similar header formatting as knownfaa
             max_depth: maximum depth for the sklearn decision tree; default= 40
             min_leaf_sup: minimum leaf support required within the decision tree; default= 10
-            jackknife_data: filename for jackknife benchmarking results
+            jk: jackknife benchmarking results dictionary
             ref_aln: reference alignment (fasta) file
             ref_tree: reference tree (newick)
             ref_pkg: pplacer reference package
             masscutoff: cutoff value for pplacer masses
             stachfa: seq name to seq for stachelhaus codes
             seedfa: seq name to seq for seed alignment for stachelhaus code extraction
-
+            clf: trained machine learning decision tree
+            i2s: ordered list of specificities
         Returns:                                                                                                                             
     """
 
     for query in fasta:
         wc_name = query+'_'+wildcard
-        ## Write fasta for functions that need files
-        tmpfaa = group+'.tmp.faa'
-        write_fasta(wc_name, fasta[query], tmpfaa) ## Single entry fasta
 
         ## Store as a dictionary for functions that don't
         queryfa = {wc_name: fasta[query]}
 
         ## PrediCAT
-        predicat_result = run_predicat(ref_aln, queryfa, wildcard, ref_tree, ref_pkg, masscutoff)
+        predicat_result = run_predicat(ref_aln, queryfa, wildcard, ref_tree, ref_pkg, masscutoff, snn_thresh)
 
         ## ASM
         asm = run_asm(queryfa, stachfa, seedfa)
@@ -492,10 +514,21 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         svm = run_svm(queryfa)
 
         ## pHMM
-        phmm = run_phmm(queryfa)
+        hmmdb = 'nrpsA.hmmdb'
+        phmm = subprocessing.run_phmm_sandpuma(queryfa, hmmdb)
         
         ## PID
+        pid = subprocessing.run_pid_sandpuma(queryfa, knownfaa)
+        
         ## Ensemble
+        query_features = [pid]
+        query_features.extend(get_feature_matrix(predicat_result.monophyly, i2s))
+        query_features.extend(get_feature_matrix(predicat_result.forced, i2s))
+        query_features.extend(get_feature_matrix(svm, i2s))
+        query_features.extend(get_feature_matrix(asm, i2s))
+        query_features.extend(get_feature_matrix(phmm, i2s))
+        ensemble = clf.predict(query_features)[0]
+        
         ## Rescore paths
 
 
@@ -531,6 +564,7 @@ def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[st
             groups[groupname] = [qname]
     return groups
 
+
 def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff:float, stach_file: str, seed_file: str):
         """ SANDPUMA parallelized pipleline
 
@@ -555,6 +589,58 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
 
         """
 
+        ## Load jackknife data
+        jk = {}
+        allspec = {}
+        with open(jackknife_data, "r") as j:
+                next(j) ## skip header
+                for line in j:
+                        line = line.strip()
+                        l = line.split("\t")
+                        jk[l[10]] = {}
+                        jk[l[10]]['true'] = l[4]
+                        jk[l[10]]['pid'] = l[3]
+                        jk[l[10]]['shuf'] = l[0]
+                        jk[l[10]]['jk'] = l[1]
+                        jk[l[10]]['query'] = l[2]
+                        jk[l[10]]['bin'] = l[11]
+                        called_spec = l[5]
+                        if l[7] == 'N':
+                                called_spec = 'no_call'
+                        jk[l[10]]['method'] = {}
+                        jk[l[10]]['method'][l[6]] = called_spec
+                        allspec[l[4]] = -1
+                        allspec[l[5]] = -1
+        ## Map specificities to integers
+        i2s = []
+        i = 0
+        for spec in sorted(allspec, key=allspec.get):
+             allspec[spec] = i
+             i2s.append(spec)
+             i += 1
+
+        
+        ## Prepare features and labels
+        allmethods = ['prediCAT', 'forced_prediCAT_snn50', 'svm', 'stach', 'phmm']
+        features = []
+        labels = []
+        for uname in jk:
+                for m in allmethods:
+                        if m in jk[uname]['method']:
+                                continue
+                        else:
+                                jk[uname]['method'][m] = 'no_call'
+                labels.append( allspec[jk[uname]['true']] )
+                feature_matrix = [ jk[uname]['pid'] ]
+                for m in allmethods:
+                        feature_matrix.extend(get_feature_matrix(jk[uname]['method'][m], i2s))
+                features.append(feature_matrix)
+                
+        ## Train the decision tree
+        clf = tree.DecisionTreeClassifier(min_samples_leaf=msl, max_depth=md)
+        clf = clf.fit(features, labels)
+
+             
         stach_fa = read_fasta(stach_file)
         seed_fa = read_fasta(seed_file)
         groups = split_into_groups(name2seq, threads)
@@ -563,5 +649,5 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
                 for name in name2seq:
                         if name in groups[group]:
                                 toprocess[name] = name2seq[name]
-                p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa))
+                p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa, clf, i2s))
                 p.start()
