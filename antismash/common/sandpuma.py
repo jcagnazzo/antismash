@@ -31,11 +31,9 @@ class PredicatResults(module_results.ModuleResults):
 class SandpumaResults(module_results.ModuleResults):
         """ Results for SANDPUMA """
         
-        def __init__(self, record_id: str, predicat_monophyly: str, predicat_snn: str, snn_score: float, asm: str, svm: str, phmm: str, pid: float, ensemble: str, sandpuma: str) -> None:
+        def __init__(self, record_id: str, predicat: str, asm: str, svm: str, phmm: str, pid: float, ensemble: str, sandpuma: str) -> None:
             super().__init__(record_id)
             self.predicat = PredicatResults
-            self.predicat_snn = str(predicat_snn)
-            self.snn_score = float(snn_score)
             self.asm = str(asm)
             self.svm = str(svm)
             self.phmm = str(phmm)
@@ -43,13 +41,76 @@ class SandpumaResults(module_results.ModuleResults):
             self.ensemble = str(ensemble)
             self.sandpuma = str(sandpuma)
 
+def cleancall(call: str)->str:
+        ''' Cleans up predictions '''
+        call = call.replace("_result", "")
+        call = call.replace("no_confident", "nocall")
+        call = call.replace("N/A", "nocall")
+        call = call.replace("no_call", "nocall")
+        return call
+            
+def is_trustworthy_path(spresult: SandpumaResults, paths: List[str], pathacc: Dict[str, str, Any], cutoff: float) -> bool:
+        ''' Decide if a decision tree path is trustworthy '''
+        passed = 1
+        path = ''
+        for pa in paths:
+                decisions = pa.split('&')
+                for d in decisions:
+                        if d == 'LEAF_NODE':
+                                break
+                        else:
+                                decision, threshchoice = d.split('%')
+                                thresh, choice = threshchoice.split('-')
+                                if decision == 'pid':
+                                        if choice == 'T': ## Need greater than the thresh to pass
+                                                if thresh <= spresult.pid:
+                                                        passed = 0
+                                                        break
+                                        else: ## Need less or equal to thresh to pass
+                                                if thresh > spresult.pid:
+                                                        passed = 0
+                                                        break
+                                else: ## Not pid
+                                        decision = cleancall(decision)
+                                        a = decision.split('_')
+                                        spec = a[-1]
+                                        method = decision.replace('_'+spec, "")
+                                        tocheck = ''
+                                        if method == 'SVM':
+                                                tocheck = spresult.svm
+                                        elif method == 'prediCAT_SNN':
+                                                tocheck = spresult.predicat.forced
+                                        elif method == 'prediCAT_MP':
+                                                tocheck = spresult.predicat.monophyly
+                                        elif method == 'pHMM':
+                                                tocheck = spresult.phmm
+                                        elif method == 'ASM':
+                                                tocheck = spresult.asm
+                                        if choice == 'T': ## than 0.5, so NOT spec
+                                                if tocheck == spec:
+                                                        passed = 0
+                                                        break
+                                        else: ## matches spec
+                                                if tocheck != spec:
+                                                        passed = 0
+                                                        break
+                path = pa
+        path = re.sub(r"\S+&(LEAF_NODE-\d+)$", "\g<1>", path)
+        if pathacc[path]['pct'] < cutoff:
+                return False
+        else:
+                return True
+                                                        
+        
 def get_parent(tree, child_clade) -> Phylo.Node:
+        ''' Given a tree and a node, returns the parental node '''
         node_path = tree.get_path(child_clade)
         if len(node_path) < 2:
                 return None
         return node_path[-2]
 
 def get_child_leaves(tree, parent) -> List:
+        ''' Given a tree and a node, returns all children nodes '''
         child_leaves = []
         for leaf in tree.get_terminals():
                 for node in tree.get_path(leaf):
@@ -58,12 +119,14 @@ def get_child_leaves(tree, parent) -> List:
         return child_leaves
 
 def calcscore(scaleto, distance) -> float:
+        ''' Scale distance to score from 0 to 1 '''
         if(distance >= scaleto):
                 return 0
         else:
                 return float(scaleto - distance) / scaleto
 
 def getscore(scaleto, nd, dist2q, leaf, o) -> float:
+        ''' Calculate the SNN '''
         score = 0
         nnspec = leaf[o[0]]['spec']
         for n in o:
@@ -465,7 +528,7 @@ def get_feature_matrix(spec: str, i2s: List[str]) -> List:
         return f
 
 
-def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float, stachfa: Dict[str, str], seedfa: Dict[str, str], clf: DecisionTreeClassifier, i2s: List[str]):
+def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float, stachfa: Dict[str, str], seedfa: Dict[str, str], clf: DecisionTreeClassifier, i2s: List[str], paths: List[str], pathacc: Dict[str, str, Any]) -> SandpumaResults:
         """ SANDPUMA
 
         Order of processing:
@@ -495,43 +558,53 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
             seedfa: seq name to seq for seed alignment for stachelhaus code extraction
             clf: trained machine learning decision tree
             i2s: ordered list of specificities
-        Returns:                                                                                                                             
-    """
+            paths: list of possible decision tree paths
+            pathacc: dictionary of path accuracies
 
-    for query in fasta:
-        wc_name = query+'_'+wildcard
+        Returns:                                                                                                                
+            dictionary of SandpumaResults
+             
+        """
 
-        ## Store as a dictionary for functions that don't
-        queryfa = {wc_name: fasta[query]}
-
-        ## PrediCAT
-        predicat_result = run_predicat(ref_aln, queryfa, wildcard, ref_tree, ref_pkg, masscutoff, snn_thresh)
-
-        ## ASM
-        asm = run_asm(queryfa, stachfa, seedfa)
-
-        ## SVM
-        svm = run_svm(queryfa)
-
-        ## pHMM
-        hmmdb = 'nrpsA.hmmdb'
-        phmm = subprocessing.run_phmm_sandpuma(queryfa, hmmdb)
+        sp_results = {}
+        for query in fasta:
+                wc_name = query+'_'+wildcard
+                
+                ## Store as a dictionary for functions that don't
+                queryfa = {wc_name: fasta[query]}
         
-        ## PID
-        pid = subprocessing.run_pid_sandpuma(queryfa, knownfaa)
-        
-        ## Ensemble
-        query_features = [pid]
-        query_features.extend(get_feature_matrix(predicat_result.monophyly, i2s))
-        query_features.extend(get_feature_matrix(predicat_result.forced, i2s))
-        query_features.extend(get_feature_matrix(svm, i2s))
-        query_features.extend(get_feature_matrix(asm, i2s))
-        query_features.extend(get_feature_matrix(phmm, i2s))
-        ensemble = clf.predict(query_features)[0]
-        
-        ## Rescore paths
+                ## PrediCAT
+                predicat_result = run_predicat(ref_aln, queryfa, wildcard, ref_tree, ref_pkg, masscutoff, snn_thresh)
 
+                ## ASM
+                asm = run_asm(queryfa, stachfa, seedfa)
 
+                ## SVM
+                svm = run_svm(queryfa)
+
+                ## pHMM
+                hmmdb = 'nrpsA.hmmdb'
+                phmm = subprocessing.run_phmm_sandpuma(queryfa, hmmdb)
+        
+                ## PID
+                pid = subprocessing.run_pid_sandpuma(queryfa, knownfaa)
+        
+                ## Ensemble
+                query_features = [pid]
+                query_features.extend(get_feature_matrix(predicat_result.monophyly, i2s))
+                query_features.extend(get_feature_matrix(predicat_result.forced, i2s))
+                query_features.extend(get_feature_matrix(svm, i2s))
+                query_features.extend(get_feature_matrix(asm, i2s))
+                query_features.extend(get_feature_matrix(phmm, i2s))
+                ensemble = clf.predict(query_features)[0]
+        
+                ## Rescore paths
+                sp = SandpumaResults(predicat_result, asm, svm, phmm, pid, ensemble, 'Unchecked')
+                if is_trustworthy_path(sp, paths, pathacc, 0.5):
+                        sp_results[query] = SandpumaResults(predicat_result, asm, svm, phmm, pid, ensemble, ensemble)
+                else:
+                        sp_results[query] = SandpumaResults(predicat_result, asm, svm, phmm, pid, ensemble, 'no_call')
+        return sp_results
 
 def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[str]]:
                       
@@ -640,7 +713,42 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
         clf = tree.DecisionTreeClassifier(min_samples_leaf=msl, max_depth=md)
         clf = clf.fit(features, labels)
 
-             
+        ## Load the nodemap for decision tree
+        nodemap = {}
+        with open('nodemap.tsv', "r") as nm:
+                for line in nm:
+                        if line[0] == '#':
+                                continue
+                        else:
+                                line = line.strip()
+                                l = line.split("\t")
+                                nodemap[l[0]] = {'parent': l[1],
+                                                 'parent_call': l[2],
+                                                 'decision': l[3],
+                                                 'threshold': l[4]}
+        ## Define paths
+        paths = []
+        for n in sorted(nodemap):
+                if nodemap[n]['decision'] == 'LEAF_NODE':
+                        p = nodemap[n]['parent']
+                        traceback = nodemap[p]['decision']+'%'+node[p]['thresh']+'-'+node[n]['parent_call']+'&LEAF_NODE-'+n
+                        while(p != 0):
+                                n = p
+                                p = node[p]['parent']
+                                t = node[p]['decision']+'%'+node[p]['thresh']+'-'+node[n]['parent_call']
+                                traceback = t+'&'+traceback
+                        paths.append(traceback)
+
+        ## Load path accuracies
+        pathacc = {}
+        with open('traceback', "r") as tb:
+                for line in tb:
+                        line = line.strip()
+                        l = line.split("\t")
+                        l[2] = re.sub(r"\S+&(LEAF_NODE-\d+)$", "\g<1>", l[2])
+                        pathacc[l[2]] = {'pct': l[0],
+                                         'n': l[1]}
+        
         stach_fa = read_fasta(stach_file)
         seed_fa = read_fasta(seed_file)
         groups = split_into_groups(name2seq, threads)
@@ -649,5 +757,5 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
                 for name in name2seq:
                         if name in groups[group]:
                                 toprocess[name] = name2seq[name]
-                p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa, clf, i2s))
+                p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa, clf, i2s, paths, pathacc))
                 p.start()
