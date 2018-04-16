@@ -402,11 +402,16 @@ def run_pplacer(reference_tree: str, reference_alignment: str, reference_package
             path to the resulting pplacer singular tree, newick format
     """
     config = get_config()
-    
+
+    anames, aseqs = [], []
+    for k, v in alignment.items():
+        anames.append(k)
+        aseqs.append(v)
+        
     pplacer_tree = "pplacer_tree.sing.nwk" ## This may need to be updated depending on working dirs
-    with NamedTemporaryFile(mode="w+") as aln:
-        write_fasta(alignment, aln)
-        with NamedTemporaryFile(mode="w+") as jplace:
+    with NamedTemporaryFile(mode="w+", suffix='.fasta') as aln:
+        write_fasta(anames, aseqs, aln.name)
+        with NamedTemporaryFile(mode="w+", suffix='.jplace') as jplace:
             pplacer_result = execute(["pplacer",
                           "-t", reference_tree,
                           "-r", reference_alignment,
@@ -434,12 +439,19 @@ def run_mafft_predicat_trim(fa: Dict[str, str]) -> Dict[str, str]:
         Returns:
             aligned fasta Dictionary of seq names (str) to seqs (str)
     """
+    fnames, fseqs = [], []
+    for k, v in fa.items():
+        fnames.append(k)
+        fseqs.append(v)
+    
     with NamedTemporaryFile(mode="w+") as query_unaligned:
-        write_fasta(fa, query_unaligned.name)
+        write_fasta(fnames, fseqs, query_unaligned.name)
         with NamedTemporaryFile(mode="w+") as query_aligned:
-            mafft_result = execute(["mafft", "--quiet", "--namelength 70", "--op 5",
+            mafft_result = execute(["mafft", "--quiet",
+                                    "--namelength", "70",
+                                    "--op",  "5",
                                     query_unaligned.name],
-                                   stdout=query_aligned.name)
+                                   stdout=query_aligned) ## Note: stdout requires a file object, not a name
             if not mafft_result.successful():
                 raise RuntimeError("mafft returned %d: %r while performing initial prediCAT trim alignment" % (
                     mafft_result.return_code, mafft_result.stderr.replace("\n", "") ))
@@ -454,8 +466,12 @@ def run_muscle_profile_sandpuma(ref_afa: str, query_fa: Dict[str, str]) -> Dict[
         Returns:
             aligned fasta Dictionary of all seq names (str) to seqs (str)
     """
+    fnames, fseqs = [], []
+    for k, v in query_fa.items():
+        fnames.append(k)
+        fseqs.append(v)
     with NamedTemporaryFile(mode="w+") as query_unaligned:
-        write_fasta(fa, query_unaligned.name)
+        write_fasta(fnames, fseqs, query_unaligned.name)
         with NamedTemporaryFile(mode="w+") as all_aligned:
             muscle_result = execute(["muscle", "-profile",
                                      "-in1", ref_afa,
@@ -478,14 +494,18 @@ def mafft_sandpuma_asm(toalign: Dict[str, str], gapopen: float) -> Dict[str, str
         Returns:
             aligned fasta Dictionary of all seq names (str) to seqs (str)
     """
+    fnames, fseqs = [], []
+    for k, v in toalign.items():
+        fnames.append(k)
+        fseqs.append(v)
     with NamedTemporaryFile(mode="w+") as query_unaligned:
-        write_fasta(toalign, query_unaligned.name)
+        write_fasta(fnames, fseqs, query_unaligned.name)
         with NamedTemporaryFile(mode="w+") as all_aligned:
             mafft_result = execute(["mafft", "--quiet",
-                                     "--op", gapopen,
-                                     "--namelength", 60,
+                                     "--op", str(gapopen),
+                                     "--namelength", "60",
                                      query_unaligned.name],
-                                   stdout=all_aligned.name)
+                                   stdout=all_aligned)
             if not mafft_result.successful():
                 raise RuntimeError("mafft returned %d: %r while performing ASM seed alignment" % (
                     mafft_result.return_code, mafft_result.stderr.replace("\n", "") ))
