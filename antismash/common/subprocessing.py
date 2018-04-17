@@ -15,6 +15,7 @@ from tempfile import NamedTemporaryFile
 from typing import Dict, List
 import warnings
 import re
+from Bio import Phylo
 
 from helperlibs.wrappers.io import TemporaryDirectory
 
@@ -392,7 +393,7 @@ def align_domain_to_reference(reference_alignment: str, seq_names: list, seq_seq
     return afa
 
 
-def run_pplacer(reference_tree: str, reference_alignment: str, reference_package: str, alignment: Dict[str, str]) -> str:
+def run_pplacer(reference_tree: str, reference_alignment: str, reference_package: str, alignment: Dict[str, str]) -> Phylo.BaseTree:
     """ Runs pplacer, places query sequences onto a precalculated phylogeny
 
         Arguments:
@@ -409,7 +410,6 @@ def run_pplacer(reference_tree: str, reference_alignment: str, reference_package
         anames.append(k)
         aseqs.append(v)
         
-    pplacer_tree = "pplacer_tree.sing.nwk" ## This may need to be updated depending on working dirs
     with NamedTemporaryFile(mode="w+", suffix='.fasta') as aln:
         write_fasta(anames, aseqs, aln.name)
         with NamedTemporaryFile(mode="w+", suffix='.jplace') as jplace:
@@ -424,11 +424,13 @@ def run_pplacer(reference_tree: str, reference_alignment: str, reference_package
                     pplacer_result.return_code, pplacer_result.stderr.replace("\n", ""),
                     aln.name))
             ## Summarize to a single tree
-            guppy_result = execute(["guppy", "sing", jplace.name, "-o", pplacer_tree])
-            if not guppy_result.successful():
-                raise RuntimeError("guppy sing returned %d: %r while summarizing %s" % (
-                    guppy_result.return_code, guppy_result.stderr.replace("\n", ""),
-                    jplace.name))
+            with NamedTemporaryFile(mode="w+", suffix='.nwk') as gup:
+                guppy_result = execute(["guppy", "sing", jplace.name, "-o", gup.name])
+                if not guppy_result.successful():
+                    raise RuntimeError("guppy sing returned %d: %r while summarizing %s" % (
+                        guppy_result.return_code, guppy_result.stderr.replace("\n", ""),
+                        jplace.name))
+                pplacer_tree = Phylo.read(gup.name, 'newick')
     return(pplacer_tree)
 
 def run_mafft_predicat_trim(fa: Dict[str, str]) -> Dict[str, str]:

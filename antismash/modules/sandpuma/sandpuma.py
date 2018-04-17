@@ -228,10 +228,10 @@ def checkclade(query: int, lo: int, hi: int, wc: str, tree: Phylo.BaseTree, l: D
         return(['deeperdive', 'NA'])        
 
 
-def predicat(pplacer_tree: str, masscutoff: float, wild: str, snn_thresh: float)-> PredicatResults:
+def predicat(tree: Phylo.BaseTree, masscutoff: float, wild: str, snn_thresh: float)-> PredicatResults:
     """ predicat substrate prediction
     Arguments:
-        pplacer_tree: pplacer tree (newick)
+        pplacer_tree: pplacer tree
         masscutoff: cutoff value for pplacer masses
         wild: wildcard variable
         snn_thresh: SNN threshold for confident prediction (default=0.5)
@@ -249,8 +249,6 @@ def predicat(pplacer_tree: str, masscutoff: float, wild: str, snn_thresh: float)
     nppref = ['Q70AZ7_A3', 'Q8KLL5_A3'] ## Leaves used to normalize the nn score to SNN
     npnode = ['', ''] ## initialize node list for leaves above
     dcut = 2.5 ## normalized distance cutoff for nearest neighbor (emperically derived default=2.5)
-    ## read tree
-    tree = Phylo.read(pplacer_tree, 'newick')
     query = []
     leaves = {}
     ## Loop through leaves, only keep top placement
