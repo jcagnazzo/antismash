@@ -350,7 +350,8 @@ def run_predicat(reference_aln: str, queryfa: Dict[str, str], wildcard: str, ref
     """
     query = next(iter(queryfa))
     ## Align query to a single known sequence
-    to_align = queryfa
+    to_align = {}
+    to_align[query] = queryfa[query]
     ref = fasta.read_fasta(reference_aln)
     tname = next(iter(ref)) ## Grab any training sequence header
     to_align[tname] = ref[tname].replace('-', '')
@@ -414,7 +415,10 @@ def run_asm(queryfa: Dict[str, str], stachfa: Dict[str, str], seedfa: Dict[str, 
     for sname in stachfa:
         match = 0
         split_id = re.split("_+", sname)
-        spec = re.split("|", split_id[-1])
+        if re.match(r"\|", split_id[-1]) is not None: 
+            spec = re.split("|", split_id[-1])
+        else:
+            spec = [split_id[-1]]
         for p, val in enumerate(stachfa[sname]):
             if val == extractedcode[qname][p]:
                 match += 1
@@ -438,15 +442,15 @@ def run_asm(queryfa: Dict[str, str], stachfa: Dict[str, str], seedfa: Dict[str, 
         return('no_call')
 
 
-def run_svm(queryfa: Dict[str, str]) -> str:
+def run_svm(queryfa: Dict[str, str], nrpsdir: str) -> str:
     """ Support vector machine (SVM) substrate prediction
     Arguments:
         queryfa: seq id to seq dictionary
+        ref: filename for SVM reference alignment
 
     Returns:                                                                                                                            substrate specificity prediction
     """
-    ## Set input files
-    ref = "A_domains_muscle.fasta" ## From NRPSPredictor2
+    ref = nrpsdir+'/A_domains_muscle.fasta'
     ## Set positions
     startpos = 66
     a34positions = [210, 213, 214, 230, 234,
@@ -468,24 +472,24 @@ def run_svm(queryfa: Dict[str, str]) -> str:
     poslist = []
     while refseq != '':
         if nongaps in positions34 and refseq[0] != '-':
-            poslist.append(b)
+            poslist.append(allp)
         if refseq[0] != '-':
             nongaps += 1
         allp += 1
-        refseq[1:]
+        refseq = refseq[1:]
     seq34 = ''
     for j in poslist:
-        aa = queryfa[qname][j]
+        aa = aligned[qname][j]
         k, l = j, j
         if aa == '-':
             k += 1
             l = l - 1
             if l not in poslist:
-                aa = queryfa[qname][l]
+                aa = aligned[qname][l]
             elif (j+1) not in poslist:
-                aa = queryfa[qname][k]
+                aa = aligned[qname][k]
         seq34 = seq34+aa
-    return subprocessing.run_svm_sandpuma(seq34)
+    return subprocessing.run_svm_sandpuma(seq34, nrpsdir)
 
 
 def get_feature_matrix(spec: str, i2s: List[str]) -> List:
@@ -506,7 +510,7 @@ def get_feature_matrix(spec: str, i2s: List[str]) -> List:
     return f
 
 
-def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float, stachfa: Dict[str, str], seedfa: Dict[str, str], clf: tree.DecisionTreeClassifier, i2s: List[str], paths: List[str], pathacc: Dict[str, Dict[str, Any]]) -> SandpumaResults:
+def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff: float, stachfa: Dict[str, str], seedfa: Dict[str, str], clf: tree.DecisionTreeClassifier, i2s: List[str], paths: List[str], pathacc: Dict[str, Dict[str, Any]], nrpsdir: str, phmmdb: str, piddb: str) -> SandpumaResults:
     """ SANDPUMA
     Order of processing:
         predicat: both monophyly and SNN substrate specificity prediction
@@ -537,6 +541,9 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         i2s: ordered list of specificities
         paths: list of possible decision tree paths
         pathacc: dictionary of path accuracies
+        nrpsdir: directory for NRPSPredictor2
+        phmmdb: pHMM database
+        piddb: diamond db for PID
 
     Returns:                                                                                                                
         dictionary of SandpumaResults
@@ -554,13 +561,13 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         asm = run_asm(queryfa, stachfa, seedfa)
         ## SVM
         print("SVM")
-        svm = run_svm(queryfa)
+        svm = run_svm(queryfa, nrpsdir)
         ## pHMM
         print("pHMM")
-        hmmdb = 'nrpsA.hmmdb'
-        phmm = subprocessing.run_phmm_sandpuma(queryfa, hmmdb)
+        phmm = subprocessing.run_phmm_sandpuma(queryfa, phmmdb)
         ## PID
-        pid = subprocessing.run_pid_sandpuma(queryfa, knownfaa)
+        print("PID")
+        pid = subprocessing.run_pid_sandpuma(queryfa, piddb)
         ## Ensemble
         print("Ensemble")
         query_features = [pid]
@@ -569,6 +576,7 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         query_features.extend(get_feature_matrix(svm, i2s))
         query_features.extend(get_feature_matrix(asm, i2s))
         query_features.extend(get_feature_matrix(phmm, i2s))
+        query_features = np.array(query_features).reshape(1, -1)
         ensemble = clf.predict(query_features)[0]
         ## Rescore paths
         print("Rescore")
@@ -610,7 +618,7 @@ def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[st
     return groups
 
 
-def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff:float, seed_file: str, nodemap_file: str, traceback_file: str):
+def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard: str, snn_thresh: float, knownasm: str, max_depth: int, min_leaf_sup: int, jackknife_data: str, ref_aln: str, ref_tree: str, ref_pkg: str, masscutoff:float, seed_file: str, nodemap_file: str, traceback_file: str, nrpsdir: str, phmmdb: str, piddb: str):
     """ SANDPUMA parallelized pipleline
     Arguments:
         name2seq: dictionary of seq names (str) to seqs (str)
@@ -629,6 +637,9 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
         seed_file: seed fasta file (single entry) used for stachelhaus code extraction
         nodemap_file: filename for map of decision tree outcomes
         traceback_file: jackknife results for all paths
+        nrpsdir: dir for NRPSPredictor2
+        phmmdb: pHMM database
+        piddb: diamand db for PID
 
     Returns:                                     
 
@@ -724,7 +735,7 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
         for name in name2seq:
             if name in groups[group]:
                 toprocess[name] = name2seq[name]
-        p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa, clf, i2s, paths, pathacc))
+        p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa, clf, i2s, paths, pathacc, nrpsdir, phmmdb, piddb))
         p.start()
 
 def sandpuma_test(adomain_file):
@@ -746,9 +757,12 @@ def sandpuma_test(adomain_file):
     seed_file = data_dir+'seed.afa'
     nodemap_file = data_dir+'nodemap.tsv'
     traceback_file = data_dir+'traceback.tsv'
+    nrpspred2basedir = data_dir+'NRPSPredictor2'
+    phmmdb = data_dir+'fullset20160624_cl_nrpsA.hmmdb'
+    piddb = data_dir+'fullset0_smiles.dmnd'
     
     ## Actually test
-    run_sandpuma(test_fa, threads, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff, seed_file, nodemap_file, traceback_file)
+    run_sandpuma(test_fa, threads, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff, seed_file, nodemap_file, traceback_file, nrpspred2basedir, phmmdb, piddb)
 
 
 
