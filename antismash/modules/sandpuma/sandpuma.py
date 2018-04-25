@@ -32,7 +32,7 @@ class PredicatResults(module_results.ModuleResults):
 class SandpumaResults(module_results.ModuleResults):
     """ Results for SANDPUMA """
     def __init__(self, predicat: str, asm: str, svm: str, phmm: str, pid: float, ensemble: str, sandpuma: str) -> None:
-        self.predicat = PredicatResults
+        self.predicat = predicat
         self.asm = str(asm)
         self.svm = str(svm)
         self.phmm = str(phmm)
@@ -57,14 +57,14 @@ def is_trustworthy_path(spresult: SandpumaResults, paths: List[str], pathacc: Di
     for pa in paths:
         decisions = pa.split('&')
         for d in decisions:
-            if d == 'LEAF_NODE':
+            if 'LEAF_NODE' in d:
                 break
             else:
                 decision, threshchoice = d.split('%')
                 thresh, choice = threshchoice.split('-')
                 if decision == 'pid':
                     if choice == 'T': ## Need greater than the thresh to pass
-                        if thresh <= spresult.pid:
+                        if float(thresh) <= spresult.pid:
                             passed = 0
                             break
                         else: ## Need less or equal to thresh to pass
@@ -97,7 +97,9 @@ def is_trustworthy_path(spresult: SandpumaResults, paths: List[str], pathacc: Di
                                 break
         path = pa
     path = re.sub(r"\S+&(LEAF_NODE-\d+)$", "\g<1>", path)
-    if pathacc[path]['pct'] < cutoff:
+    print("pathacc: ")
+    print(pathacc)
+    if float(pathacc[path]['pct']) < cutoff:
         return False
     else:
         return True
