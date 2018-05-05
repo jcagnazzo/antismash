@@ -31,8 +31,8 @@ class PredicatResults(module_results.ModuleResults):
 
 class SandpumaResults(module_results.ModuleResults):
     """ Results for SANDPUMA """
-    def __init__(self, predicat: str, asm: str, svm: str, phmm: str, pid: float, ensemble: str, sandpuma: str) -> None:
-        self.predicat = PredicatResults
+    def __init__(self, predicat: PredicatResults, asm: str, svm: str, phmm: str, pid: float, ensemble: str, sandpuma: str) -> None:
+        self.predicat = predicat
         self.asm = str(asm)
         self.svm = str(svm)
         self.phmm = str(phmm)
