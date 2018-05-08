@@ -24,4 +24,5 @@ def shuffler(query_file, splits, shuffles):
 shuffled = shuffler(cwd + "\\" 'fullset_with_specs.csv',10,1)
 print(shuffled) 
 
+#test upload
 
