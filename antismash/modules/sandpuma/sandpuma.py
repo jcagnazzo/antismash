@@ -576,7 +576,7 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         query_features.extend(get_feature_matrix(asm, i2s))
         query_features.extend(get_feature_matrix(phmm, i2s))
         query_features = np.array(query_features).reshape(1, -1)
-        ensemble = clf.predict(query_features)[0]
+        ensemble = i2s[clf.predict(query_features)[0]]
         ## Rescore paths
         #print("Rescore")
         sp = SandpumaResults(predicat_result, asm, svm, phmm, pid, ensemble, 'Unchecked')
@@ -594,7 +594,7 @@ def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[st
         n_groups: number of groups to split into (you can think of this as the number of threads)
 
     Returns:
-        dictionary of groups to list of fasta headers
+        dictionary of groups to fasta headers to seqs
     """
     n_seqs = len(fasta)
     seqs_per_group = int(n_seqs / n_groups)
@@ -602,18 +602,18 @@ def split_into_groups(fasta: Dict[str, str], n_groups: int) -> Dict[str, List[st
     groupnum = 1
     groups = {}
     for qname in fasta:
-        if (qnum == 0) or (i < seqs_per_group):
+        if (qnum == 0) or (qnum < seqs_per_group):
             groupname = 'group'+str(groupnum)
-            if groupname in groups:
-                groups[groupname].append(qname)
-            else:
-                groups[groupname] = [qname]
+            if groupname not in groups:
+                groups[groupname] = {}
+            groups[groupname][qname] = fasta[qname]
             qnum += 1
         else:
             groupnum += 1
             groupname = 'group'+str(groupnum)
-            groups[groupname] = [qname]
-            qnum = 0
+            groups[groupname] = {}
+            groups[groupname][qname] = fasta[qname]
+            qnum = 1
     return groups
 
 
@@ -729,18 +729,16 @@ def run_sandpuma(name2seq: Dict[str, str], threads: int, knownfaa: str, wildcard
     seed_fa = fasta.read_fasta(seed_file)
     ## Split groups
     groups = split_into_groups(name2seq, threads)
-    for group in groups:
-        toprocess = {}
-        for name in name2seq:
-            if name in groups[group]:
-                toprocess[name] = name2seq[name]
-        p = multiprocessing.Process(target=sandpuma_multithreaded, args=(group, toprocess, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa, clf, i2s, paths, pathacc, nrpsdir, phmmdb, piddb))
-        p.start()
 
+    args = []
+    for group in groups:
+         args.append([group, groups[group], knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, ref_aln, ref_tree, ref_pkg, masscutoff, stach_fa, seed_fa, clf, i2s, paths, pathacc, nrpsdir, phmmdb, piddb])
+    return(subprocessing.parallel_function(sandpuma_multithreaded, args, cpus=threads))
+    
 def sandpuma_test(adomain_file):
     ## Set params
     test_fa = fasta.read_fasta(adomain_file)
-    threads = 1
+    threads = 10 ## This will need to be set by antiSMASH upstream
     data_dir = os.path.dirname(os.path.realpath(sys.argv[0]))+'/data/'
     knownfaa = data_dir+'fullset0_smiles.faa'
     wildcard = 'UNK'
@@ -761,7 +759,21 @@ def sandpuma_test(adomain_file):
     piddb = data_dir+'fullset0_smiles.dmnd'
     
     ## Actually test
-    run_sandpuma(test_fa, threads, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff, seed_file, nodemap_file, traceback_file, nrpspred2basedir, phmmdb, piddb)
+    results = run_sandpuma(test_fa, threads, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff, seed_file, nodemap_file, traceback_file, nrpspred2basedir, phmmdb, piddb)
+    for r in results:
+        for q in r:
+            print("\t".join([q,
+                             r[q].predicat.monophyly,
+                             r[q].predicat.forced,
+                             str(r[q].predicat.snn_score),
+                             r[q].asm,
+                             r[q].svm,
+                             r[q].phmm,
+                             str(r[q].pid),
+                             r[q].ensemble,
+                             r[q].sandpuma
+                             
+            ]))
 
 
 
