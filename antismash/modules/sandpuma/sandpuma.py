@@ -57,11 +57,12 @@ def is_trustworthy_path(spresult: SandpumaResults, paths: List[str], pathacc: Di
     for pa in paths:
         decisions = pa.split('&')
         for d in decisions:
-            if d == 'LEAF_NODE':
+            if d[0:9] == 'LEAF_NODE':
                 break
             else:
                 decision, threshchoice = d.split('%')
                 thresh, choice = threshchoice.split('-')
+                thresh = float(thresh)
                 if decision == 'pid':
                     if choice == 'T': ## Need greater than the thresh to pass
                         if thresh <= spresult.pid:
@@ -97,7 +98,7 @@ def is_trustworthy_path(spresult: SandpumaResults, paths: List[str], pathacc: Di
                                 break
         path = pa
     path = re.sub(r"\S+&(LEAF_NODE-\d+)$", "\g<1>", path)
-    if pathacc[path]['pct'] < cutoff:
+    if float(pathacc[path]['pct']) < cutoff:
         return False
     else:
         return True
@@ -552,22 +553,22 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         ## Store as a dictionary for functions that don't
         queryfa = {wc_name: fasta[query]}
         ## PrediCAT
-        print("prediCAT")
+        #print("prediCAT")
         predicat_result = run_predicat(ref_aln, queryfa, wildcard, ref_tree, ref_pkg, masscutoff, snn_thresh)
         ## ASM
-        print("ASM")
+        #print("ASM")
         asm = run_asm(queryfa, stachfa, seedfa)
         ## SVM
-        print("SVM")
+        #print("SVM")
         svm = run_svm(queryfa, nrpsdir)
         ## pHMM
-        print("pHMM")
+        #print("pHMM")
         phmm = subprocessing.run_phmm_sandpuma(queryfa, phmmdb)
         ## PID
-        print("PID")
+        #print("PID")
         pid = subprocessing.run_pid_sandpuma(queryfa, piddb)
         ## Ensemble
-        print("Ensemble")
+        #print("Ensemble")
         query_features = [pid]
         query_features.extend(get_feature_matrix(predicat_result.monophyly, i2s))
         query_features.extend(get_feature_matrix(predicat_result.forced, i2s))
@@ -577,7 +578,7 @@ def sandpuma_multithreaded(group: str, fasta: Dict[str, str], knownfaa: str, wil
         query_features = np.array(query_features).reshape(1, -1)
         ensemble = clf.predict(query_features)[0]
         ## Rescore paths
-        print("Rescore")
+        #print("Rescore")
         sp = SandpumaResults(predicat_result, asm, svm, phmm, pid, ensemble, 'Unchecked')
         if is_trustworthy_path(sp, paths, pathacc, 0.5):
             sp_results[query] = SandpumaResults(predicat_result, asm, svm, phmm, pid, ensemble, ensemble)
