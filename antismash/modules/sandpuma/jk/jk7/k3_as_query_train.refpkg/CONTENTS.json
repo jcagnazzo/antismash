@@ -1,0 +1,25 @@
+{
+    "metadata": {
+        "create_date": "2018-05-14 17:45:24",
+        "format_version": "1.1",
+        "locus": "a_domain"
+    },
+    "files": {
+        "phylo_model": "phylo_modelc9zlqy5n.json",
+        "aln_fasta": "k3_as_query_train.afa",
+        "tree": "k3_as_query_train.nwk",
+        "tree_stats": "k3_as_query_train.nwk.log"
+    },
+    "md5": {
+        "phylo_model": "5936e04ef4a058bf702f7cc8c6f65ee9",
+        "aln_fasta": "ade0da7f4efb963cbd33e4df503cc918",
+        "tree": "7dff21571978ebc41a6dcc9254746373",
+        "tree_stats": "1c9b3ab973ce333dc29f469df33bb53d"
+    },
+    "log": [
+        "Stripped refpkg (removed 0 files)",
+        "Loaded initial files into empty refpkg"
+    ],
+    "rollback": null,
+    "rollforward": null
+}

@@ -760,6 +760,7 @@ def sandpuma_test(adomain_file):
     
     ## Actually test
     results = run_sandpuma(test_fa, threads, knownfaa, wildcard, snn_thresh, knownasm, max_depth, min_leaf_sup, jackknife_data, ref_aln, ref_tree, ref_pkg, masscutoff, seed_file, nodemap_file, traceback_file, nrpspred2basedir, phmmdb, piddb)
+    print("\t".join(['query', 'predicat_monophyly', 'predicat_snn', 'snn_score', 'asm', 'svm', 'phmm', 'pid', 'ensemble', 'sandpuma']))
     for r in results:
         for q in r:
             print("\t".join([q,
