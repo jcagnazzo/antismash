@@ -212,16 +212,16 @@ def checkclade(query: int, lo: int, hi: int, wc: str, tree: Phylo.BaseTree, l: D
             passflag = 1
             for child in get_child_leaves(tree, lca):
                 split_id = re.split("_+", child.name)
-                if(spec != ''): ## Not yet assigned
+                if(spec != ''): ## assigned
                     if((split_id[-1] != spec) and (split_id[-1] != wc)): ## Specs are different, Requires a deeper dive
                         passflag = 0
                     else:
                         spec = split_id[-1]
                         iname = split_id[0]
-                else:
+                else: # not yet assigned
                     spec = split_id[-1]
                     iname = split_id[0]
-            if(passflag == 0):
+            if(passflag == 0 or spec==''):
                 return(['deeperdive', 'NA'])
             else:
                 return([spec, iname])
@@ -324,8 +324,8 @@ def predicat(tree: Phylo.BaseTree, masscutoff: float, wild: str, snn_thresh: flo
     if(nn_dist < dcut):
         snnscore = getscore(dcut, normdist, distfromquery, leaves, ordered_dist)
         nnscore = calcscore(dcut, nn_dist)
-    if(snnscore < snn_thresh):
-        forcedpred = 'no_confident_result'
+    #if(snnscore < snn_thresh):
+        #forcedpred = 'no_confident_result'
     return PredicatResults(pred, forcedpred, nn_dist, nnscore, snnscore)
 
 
