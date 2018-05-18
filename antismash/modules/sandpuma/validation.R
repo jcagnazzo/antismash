@@ -94,3 +94,46 @@ ggplot(bysnn.all, aes(x=bin, y=mean, group=g)) +
 
 
 
+## Arrange new jk to train classifiers:
+fpp <- pplacer_scored %>% filter(method=='forced_prediCAT')
+fpp[fpp$snn<0.5,]$called_spec = 'no_confident_result'
+
+newjk <- rbind(
+  pplacer_scored %>% 
+    filter(method=='prediCAT') %>% 
+    select(shuffle, jackknife, query, pid, spec, called_spec, method, methshuf, call_made),
+  fpp %>% 
+    filter(method=='forced_prediCAT') %>% 
+    select(shuffle, jackknife, query, pid, spec, called_spec, method, methshuf, call_made),
+  original_scored %>% 
+    filter(method %in% c('asm', 'svm', 'pHMM')) %>% 
+    select(shuffle, jackknife, query, pid, spec, called_spec, method, methshuf, call_made)
+) %>% mutate(uname=paste(sep='_', shuffle, jackknife, query))
+write.table(newjk, "sp2_jkdata.tsv", sep="\t", row.names = F, quote=F)
+
+
+
+{
+ml <- read.table("classifier_jk.tsv", header = F, sep="\t", col.names = c('shuffle', 'jackknife', 'query', 'spec', 'MLmethod', 'prediction'), stringsAsFactors = F)
+ml$correct <- 'N'
+ml[ml$prediction==ml$spec,]$correct <- 'Y'
+ml.sum <- ml %>% group_by(shuffle, jackknife, MLmethod, correct) %>% summarize(count=n()) %>% dcast(shuffle+jackknife+MLmethod ~ correct) %>% mutate(pct=100*(Y/(Y+N)))
+ml.sum$type <- sub("(\\w+)_.+$", "\\1", ml.sum$MLmethod)
+ggplot(ml.sum) +
+  geom_boxplot(aes(x=MLmethod, y=pct, fill=type)) +
+  theme_classic() + theme(
+    axis.text.x = element_text(angle=60, vjust=.5),
+    legend.position = 'none'
+  ) +
+  scale_fill_brewer(palette='Set2') + ylab("Percent Correct\n(90/10 Cross-validation; 10x)") + xlab("")
+}
+
+
+
+
+{
+nn <- read.table("nntest1.tsv", header = F, sep="\t", col.names = c('shuffle', 'jackknife', 'query', 'spec', 'method', 'alpha', 'pred', 'prob'), stringsAsFactors = F)
+nn$correct <- 'N'
+nn[nn$pred==nn$spec,]$correct <- 'Y'
+nns.sum <- nn %>% group_by(shuffle, jackknife, method, alpha, correct) %>% summarize(count=n()) %>% dcast(shuffle+jackknife+method+alpha ~ correct) %>% mutate(pct=100*(Y/(Y+N)))
+}
